@@ -1,32 +1,35 @@
-use libc::{self, fork, pid_t};
+use libc::{self, WIFEXITED, WIFSIGNALED, WUNTRACED, fork, pid_t, waitpid};
 use std::{
-    ffi::{CStr, CString},
+    env,
+    ffi::{CString, c_int},
     io::{self, BufRead},
+    path::{PathBuf},
     process::ExitCode,
 };
+
+type BuiltIn = fn(Vec<String>) -> ExitCode;
+static BUILT_INS: [(&'static str, BuiltIn); 3] =
+    [("cd", shox_cd), ("help", shox_help), ("exit", shox_exit)];
 
 fn main() -> ExitCode {
     shox_loop()
 }
 
 fn shox_loop() -> ExitCode {
-    let mut line: String;
+    let mut line: String = "".to_owned();
     let mut status: ExitCode;
     loop {
-        print!("> ");
-        loop {
-            match shox_read_line() {
-                Some(s) => {
-                    line = s;
-                    break;
-                }
-                None => println!("Failed to read line!"),
+        eprint!("> ");
+        match shox_read_line() {
+            Some(s) => {
+                line = s;
             }
+            None => println!("Failed to read line!"),
         }
-        println!("{}", line);
-        let tokens = shox_split_line(line);
-        println!("{:#?}", tokens);
-        status = shox_exec(tokens);
+        // println!("{}", line.to_string());
+        let args = shox_split_line(line.to_string());
+        // println!("{:#?}", args);
+        status = shox_exec(args);
         if status == ExitCode::FAILURE {
             break;
         }
@@ -51,19 +54,106 @@ fn shox_split_line(line: String) -> Vec<String> {
     line.split_whitespace().map(|x| x.to_owned()).collect()
 }
 
-fn shox_exec(args: Vec<String>) -> ExitCode {
+fn shox_launch(args: Vec<String>) -> ExitCode {
     let mut code = ExitCode::SUCCESS;
-    let c_args: Vec<CString> = args
+    let c_args: Vec<*const i8> = args
         .iter()
         .map(|x| {
-            CString::new(x.as_str()).unwrap_or({
-                code = ExitCode::FAILURE;
-                CString::new("").unwrap()
-            })
+            CString::new(x.as_str())
+                .unwrap_or({
+                    code = ExitCode::FAILURE;
+                    CString::new("").unwrap()
+                })
+                .as_ptr()
         })
         .collect();
-    unsafe {
-        let pid: pid_t = fork();
+
+    // Exit if CString converson failed
+    if code == ExitCode::FAILURE {
+        return code;
     }
+
+    let pid: pid_t;
+    let options: c_int = WUNTRACED;
+
+    // WARN: default value of 0 might cause problems
+    let status: *mut c_int = &mut 0; // Raw pointer for status
+
+    unsafe {
+        pid = fork();
+        // Validate pid
+        if pid == 0 {
+            // TODO: Sort out execvp
+            if libc::execvp(c_args[0], c_args.as_ptr()) == -1 {
+                eprintln!("{:#?}", io::Error::last_os_error()) // Print os error
+            }
+            return ExitCode::FAILURE;
+        } else if pid < 0 {
+            // fork failure
+            return ExitCode::FAILURE;
+        } else {
+            loop {
+                waitpid(pid, status, options);
+                if WIFEXITED(*status) && WIFSIGNALED(*status) {
+                    break;
+                }
+            }
+        }
+    };
     code
+}
+
+fn shox_exec(args: Vec<String>) -> ExitCode {
+    if args.is_empty() {
+        return ExitCode::SUCCESS;
+    } else {
+        for (name, func) in BUILT_INS {
+            if args[0] == name {
+                return func(args);
+            }
+        }
+    }
+    return shox_launch(args);
+}
+
+// BUILT IN FUNCTIONS
+
+/// Change directory
+fn shox_cd(args: Vec<String>) -> ExitCode {
+    if args.len() < 2 {
+        eprintln!("shox: expected argument for \"cd\"");
+    } else {
+        let cwd: PathBuf;
+        match env::current_dir() {
+            Ok(path) => cwd = path,
+            Err(e) => {
+                eprintln!("{:#?}", e);
+                return ExitCode::FAILURE;
+            }
+        };
+        let nwd: PathBuf = cwd.join(&args[1]);
+        match env::set_current_dir(nwd) {
+            Ok(()) => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{:#?}", e);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    return ExitCode::SUCCESS;
+}
+
+/// Print list of all available commands
+fn shox_help(_args: Vec<String>) -> ExitCode {
+    println!("SHOx by Korben Tompkin");
+    println!("Available Commands:");
+    for (name, _func) in BUILT_INS {
+        println!("{}", name);
+    }
+    ExitCode::SUCCESS
+}
+
+/// Exit the program immediately
+fn shox_exit(_args: Vec<String>) -> ExitCode {
+    std::process::exit(1)
 }
