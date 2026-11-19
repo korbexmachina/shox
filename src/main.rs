@@ -5,7 +5,6 @@ use std::{
     fmt::Display,
     io::{self, BufRead, Write},
     path::PathBuf,
-    process::ExitCode,
 };
 
 use crate::ShoxError::{ForkError, IoError};
@@ -34,26 +33,24 @@ impl From<std::io::Error> for ShoxError {
 impl std::error::Error for ShoxError {}
 
 type BuiltIn = fn(Vec<String>) -> Result<(), ShoxError>;
-static BUILT_INS: [(&'static str, BuiltIn); 4] = [
+static BUILT_INS: [(&str, BuiltIn); 4] = [
     ("cd", shox_cd),
     ("help", shox_help),
     ("exit", shox_exit),
     ("echo", shox_echo),
 ];
 
-fn main() -> ExitCode {
+fn main() {
     shox_loop()
 }
 
-fn shox_loop() -> ExitCode {
+fn shox_loop() {
     let mut line: String = "".to_owned();
-    let mut status: ExitCode;
     loop {
         print!("> ");
         if let Err(e) = io::stdout().flush() {
             eprintln!("{}", e);
-            status = ExitCode::FAILURE;
-            break;
+            continue;
         }
         match shox_read_line() {
             Some(s) => {
@@ -64,15 +61,11 @@ fn shox_loop() -> ExitCode {
         // println!("{}", line.to_string());
         let args = shox_split_line(line.to_string());
         // println!("{:#?}", args);
-        status = match shox_exec(args) {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::FAILURE,
-        };
-        if status == ExitCode::FAILURE {
-            break;
+        match shox_exec(args) {
+            Ok(_) => (),
+            Err(e) => eprintln!("{}", e),
         }
     }
-    status
 }
 
 fn shox_read_line() -> Option<String> {
@@ -140,7 +133,7 @@ fn shox_exec(args: Vec<String>) -> Result<(), ShoxError> {
             }
         }
     }
-    return shox_launch(args);
+    shox_launch(args)
 }
 
 // BUILT IN FUNCTIONS
@@ -150,9 +143,8 @@ fn shox_cd(args: Vec<String>) -> Result<(), ShoxError> {
     if args.len() < 2 {
         eprintln!("shox: expected argument for \"cd\"");
     } else {
-        let cwd: PathBuf;
-        match env::current_dir() {
-            Ok(path) => cwd = path,
+        let cwd: PathBuf = match env::current_dir() {
+            Ok(path) => path,
             Err(e) => {
                 eprintln!("{}", e);
                 return Err(IoError(e));
@@ -161,7 +153,7 @@ fn shox_cd(args: Vec<String>) -> Result<(), ShoxError> {
         let nwd: PathBuf = cwd.join(&args[1]);
         env::set_current_dir(nwd)?;
     }
-    return Ok(());
+    Ok(())
 }
 
 /// Print list of all available commands
