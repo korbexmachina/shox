@@ -7,5 +7,5 @@ A small shell implementation in Rust.
 - [x] cd
 - [x] exit
 - [x] help
-- [ ] echo
+- [x] echo
 
