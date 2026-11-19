@@ -2,19 +2,41 @@ use libc::{self, WIFEXITED, WIFSIGNALED, WUNTRACED, fork, pid_t, waitpid};
 use std::{
     env,
     ffi::{CString, c_int},
+    fmt::Display,
     fs::{self, ReadDir},
     io::{self, BufRead},
     path::PathBuf,
     process::ExitCode,
 };
 
-type BuiltIn = fn(Vec<String>) -> ExitCode;
-static BUILT_INS: [(&'static str, BuiltIn); 4] = [
-    ("cd", shox_cd),
-    ("help", shox_help),
-    ("exit", shox_exit),
-    ("ls", shox_ls),
-];
+use crate::ShoxError::{ForkError, IoError};
+
+#[derive(Debug)]
+enum ShoxError {
+    IoError(io::Error),
+    ForkError,
+}
+
+impl Display for ShoxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShoxError::IoError(io_error) => write!(f, "{}", io_error),
+            ShoxError::ForkError => write!(f, "ForkError"),
+        }
+    }
+}
+
+impl From<std::io::Error> for ShoxError {
+    fn from(err: std::io::Error) -> Self {
+        ShoxError::IoError(err)
+    }
+}
+
+impl std::error::Error for ShoxError {}
+
+type BuiltIn = fn(Vec<String>) -> Result<(), ShoxError>;
+static BUILT_INS: [(&'static str, BuiltIn); 3] =
+    [("cd", shox_cd), ("help", shox_help), ("exit", shox_exit)];
 
 fn main() -> ExitCode {
     shox_loop()
@@ -34,7 +56,10 @@ fn shox_loop() -> ExitCode {
         // println!("{}", line.to_string());
         let args = shox_split_line(line.to_string());
         // println!("{:#?}", args);
-        status = shox_exec(args);
+        status = match shox_exec(args) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        };
         if status == ExitCode::FAILURE {
             break;
         }
@@ -59,24 +84,12 @@ fn shox_split_line(line: String) -> Vec<String> {
     line.split_whitespace().map(|x| x.to_owned()).collect()
 }
 
-fn shox_launch(args: Vec<String>) -> ExitCode {
-    let mut code = ExitCode::SUCCESS;
+fn shox_launch(args: Vec<String>) -> Result<(), ShoxError> {
+    // WARN: Will panic if CString conversion fails
     let c_args: Vec<*const i8> = args
         .iter()
-        .map(|x| {
-            CString::new(x.as_str())
-                .unwrap_or({
-                    code = ExitCode::FAILURE;
-                    CString::new("").unwrap()
-                })
-                .as_ptr()
-        })
+        .map(|x| CString::new(x.as_str()).unwrap().as_ptr()) // Ok to panic if CString conversion fails
         .collect();
-
-    // Exit if CString converson failed
-    if code == ExitCode::FAILURE {
-        return code;
-    }
 
     let pid: pid_t;
     let options: c_int = WUNTRACED;
@@ -88,14 +101,13 @@ fn shox_launch(args: Vec<String>) -> ExitCode {
         pid = fork();
         // Validate pid
         if pid == 0 {
-            // TODO: Sort out execvp
             if libc::execvp(c_args[0], c_args.as_ptr()) == -1 {
                 eprintln!("{:#?}", io::Error::last_os_error()) // Print os error
             }
-            return ExitCode::FAILURE;
+            return Err(ForkError);
         } else if pid < 0 {
             // fork failure
-            return ExitCode::FAILURE;
+            return Err(ForkError);
         } else {
             loop {
                 waitpid(pid, status, options);
@@ -105,12 +117,12 @@ fn shox_launch(args: Vec<String>) -> ExitCode {
             }
         }
     };
-    code
+    Ok(())
 }
 
-fn shox_exec(args: Vec<String>) -> ExitCode {
+fn shox_exec(args: Vec<String>) -> Result<(), ShoxError> {
     if args.is_empty() {
-        return ExitCode::SUCCESS;
+        return Ok(());
     } else {
         for (name, func) in BUILT_INS {
             if args[0] == name {
@@ -124,7 +136,7 @@ fn shox_exec(args: Vec<String>) -> ExitCode {
 // BUILT IN FUNCTIONS
 
 /// Change directory
-fn shox_cd(args: Vec<String>) -> ExitCode {
+fn shox_cd(args: Vec<String>) -> Result<(), ShoxError> {
     if args.len() < 2 {
         eprintln!("shox: expected argument for \"cd\"");
     } else {
@@ -133,64 +145,26 @@ fn shox_cd(args: Vec<String>) -> ExitCode {
             Ok(path) => cwd = path,
             Err(e) => {
                 eprintln!("{:#?}", e);
-                return ExitCode::FAILURE;
+                return Err(IoError(e));
             }
         };
         let nwd: PathBuf = cwd.join(&args[1]);
-        match env::set_current_dir(nwd) {
-            Ok(()) => return ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("{:#?}", e);
-                return ExitCode::FAILURE;
-            }
-        }
+        env::set_current_dir(nwd)?;
     }
-    return ExitCode::SUCCESS;
+    return Ok(());
 }
 
 /// Print list of all available commands
-fn shox_help(_args: Vec<String>) -> ExitCode {
+fn shox_help(_args: Vec<String>) -> Result<(), ShoxError> {
     println!("SHOx by Korben Tompkin");
     println!("Available Commands:");
     for (name, _func) in BUILT_INS {
         println!("{}", name);
     }
-    ExitCode::SUCCESS
+    Ok(())
 }
 
 /// Exit the program immediately
-fn shox_exit(_args: Vec<String>) -> ExitCode {
+fn shox_exit(_args: Vec<String>) -> Result<(), ShoxError> {
     std::process::exit(1)
-}
-
-/// Primitive ls implementation
-fn shox_ls(_args: Vec<String>) -> ExitCode {
-    let mut code: ExitCode = ExitCode::SUCCESS;
-    let cwd: PathBuf;
-    match env::current_dir() {
-        Ok(p) => cwd = p,
-        Err(e) => {
-            eprintln!("{:#?}", e);
-            return ExitCode::FAILURE;
-        }
-    }
-    let entries: ReadDir;
-    match fs::read_dir(cwd) {
-        Ok(x) => entries = x,
-        Err(e) => {
-            eprintln!("{:#?}", e);
-            return ExitCode::FAILURE;
-        }
-    }
-    entries.for_each(|x| match x {
-        Ok(entry) => {
-            eprint!("{:?}   ", entry.file_name()); // Print file names separated by 3 spaces
-        }
-        Err(e) => {
-            eprintln!("{}", e);
-            code = ExitCode::FAILURE;
-        }
-    });
-    eprint!("\n");
-    return code;
 }
