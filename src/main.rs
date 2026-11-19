@@ -3,8 +3,7 @@ use std::{
     env,
     ffi::{CString, c_int},
     fmt::Display,
-    fs::{self, ReadDir},
-    io::{self, BufRead},
+    io::{self, BufRead, Write},
     path::PathBuf,
     process::ExitCode,
 };
@@ -35,8 +34,12 @@ impl From<std::io::Error> for ShoxError {
 impl std::error::Error for ShoxError {}
 
 type BuiltIn = fn(Vec<String>) -> Result<(), ShoxError>;
-static BUILT_INS: [(&'static str, BuiltIn); 3] =
-    [("cd", shox_cd), ("help", shox_help), ("exit", shox_exit)];
+static BUILT_INS: [(&'static str, BuiltIn); 4] = [
+    ("cd", shox_cd),
+    ("help", shox_help),
+    ("exit", shox_exit),
+    ("echo", shox_echo),
+];
 
 fn main() -> ExitCode {
     shox_loop()
@@ -46,7 +49,12 @@ fn shox_loop() -> ExitCode {
     let mut line: String = "".to_owned();
     let mut status: ExitCode;
     loop {
-        eprint!("> ");
+        print!("> ");
+        if let Err(e) = io::stdout().flush() {
+            eprintln!("{}", e);
+            status = ExitCode::FAILURE;
+            break;
+        }
         match shox_read_line() {
             Some(s) => {
                 line = s;
@@ -73,7 +81,7 @@ fn shox_read_line() -> Option<String> {
     match line {
         Some(Ok(s)) => Some(s),
         Some(Err(e)) => {
-            println!("{:#?}", e); // Print the error and continue
+            eprintln!("{}", e); // Print the error and continue
             None
         }
         None => None,
@@ -102,7 +110,7 @@ fn shox_launch(args: Vec<String>) -> Result<(), ShoxError> {
         // Validate pid
         if pid == 0 {
             if libc::execvp(c_args[0], c_args.as_ptr()) == -1 {
-                eprintln!("{:#?}", io::Error::last_os_error()) // Print os error
+                eprintln!("{}", io::Error::last_os_error()) // Print os error
             }
             return Err(ForkError);
         } else if pid < 0 {
@@ -144,7 +152,7 @@ fn shox_cd(args: Vec<String>) -> Result<(), ShoxError> {
         match env::current_dir() {
             Ok(path) => cwd = path,
             Err(e) => {
-                eprintln!("{:#?}", e);
+                eprintln!("{}", e);
                 return Err(IoError(e));
             }
         };
@@ -167,4 +175,10 @@ fn shox_help(_args: Vec<String>) -> Result<(), ShoxError> {
 /// Exit the program immediately
 fn shox_exit(_args: Vec<String>) -> Result<(), ShoxError> {
     std::process::exit(1)
+}
+
+/// Print args to screen
+fn shox_echo(args: Vec<String>) -> Result<(), ShoxError> {
+    println!("{}", args[1..].join(" "));
+    Ok(())
 }
