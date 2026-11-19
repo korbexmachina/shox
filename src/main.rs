@@ -54,7 +54,7 @@ fn main() {
 }
 
 fn shox_loop() {
-    let mut line: String = "".to_owned();
+    let mut line: String;
     loop {
         print!("> ");
         if let Err(e) = io::stdout().flush() {
@@ -62,31 +62,42 @@ fn shox_loop() {
             continue;
         }
         match shox_read_line() {
-            Some(s) => {
+            Some(Ok(s)) => {
                 line = s;
             }
-            None => println!("Failed to read line!"),
+            Some(Err(e)) => {
+                eprintln!("shox: {}", e);
+                break;
+            }
+            None => {
+                line = String::new(); // Flush buffer to avoid re-running previous command on EOF
+                print!("\n");
+                if let Err(e) = io::stdout().flush() {
+                    eprintln!("{}", e);
+                    continue;
+                }
+            }
         }
         // println!("{}", line.to_string());
         let args = shox_split_line(line.to_string());
         // println!("{:#?}", args);
         match shox_exec(args) {
             Ok(_) => (),
-            Err(e) => eprintln!("{}", e),
+            Err(e) => eprintln!("shox: {}", e),
         }
     }
 }
 
-fn shox_read_line() -> Option<String> {
+fn shox_read_line() -> Option<Result<String, ShoxError>> {
     let stdin = io::stdin();
     let line = stdin.lock().lines().next();
     match line {
-        Some(Ok(s)) => Some(s),
+        Some(Ok(s)) => Some(Ok(s)),
         Some(Err(e)) => {
             eprintln!("{}", e); // Print the error and continue
-            None
+            Some(Err(IoError(e)))
         }
-        None => None,
+        None => None, // EOF
     }
 }
 
