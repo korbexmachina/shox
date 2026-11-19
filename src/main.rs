@@ -126,7 +126,9 @@ fn shox_launch(args: Vec<String>) -> Result<(), ShoxError> {
         } else {
             // Wait on child process to finish
             loop {
-                waitpid(pid, status, options);
+                if waitpid(pid, status, options) == -1 {
+                    return Err(IoError(io::Error::last_os_error()));
+                }
                 if WIFEXITED(*status) || WIFSIGNALED(*status) {
                     break;
                 }
