@@ -94,10 +94,12 @@ fn shox_split_line(line: String) -> Vec<String> {
 
 fn shox_launch(args: Vec<String>) -> Result<(), ShoxError> {
     // WARN: Will panic if CString conversion fails
-    let c_args: Vec<*const i8> = args
+    let c_args: Vec<CString> = args
         .iter()
-        .map(|x| CString::new(x.as_str()).unwrap().as_ptr()) // Ok to panic if CString conversion fails
+        .map(|x| CString::new(x.as_str()).unwrap()) // Ok to panic if CString conversion fails
         .collect();
+
+    let argv: Vec<*const i8> = c_args.iter().map(|x| x.as_ptr()).collect();
 
     let pid: pid_t;
     let options: c_int = WUNTRACED;
@@ -109,17 +111,17 @@ fn shox_launch(args: Vec<String>) -> Result<(), ShoxError> {
         pid = fork();
         // Validate pid
         if pid == 0 {
-            if libc::execvp(c_args[0], c_args.as_ptr()) == -1 {
-                eprintln!("{}", io::Error::last_os_error()) // Print os error
+            if libc::execvp(c_args[0].as_ptr(), argv.as_ptr()) == -1 {
+                eprintln!("{}", io::Error::last_os_error()); // Print os error
+                libc::_exit(127)
             }
-            return Err(ForkError);
         } else if pid < 0 {
             // fork failure
             return Err(ForkError);
         } else {
             loop {
                 waitpid(pid, status, options);
-                if WIFEXITED(*status) && WIFSIGNALED(*status) {
+                if WIFEXITED(*status) || WIFSIGNALED(*status) {
                     break;
                 }
             }
@@ -174,7 +176,7 @@ fn shox_help(_args: Vec<String>) -> Result<(), ShoxError> {
 
 /// Exit the program immediately
 fn shox_exit(_args: Vec<String>) -> Result<(), ShoxError> {
-    std::process::exit(1)
+    std::process::exit(0)
 }
 
 /// Print args to screen
