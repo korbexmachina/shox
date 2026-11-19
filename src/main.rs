@@ -2,14 +2,19 @@ use libc::{self, WIFEXITED, WIFSIGNALED, WUNTRACED, fork, pid_t, waitpid};
 use std::{
     env,
     ffi::{CString, c_int},
+    fs::{self, ReadDir},
     io::{self, BufRead},
-    path::{PathBuf},
+    path::PathBuf,
     process::ExitCode,
 };
 
 type BuiltIn = fn(Vec<String>) -> ExitCode;
-static BUILT_INS: [(&'static str, BuiltIn); 3] =
-    [("cd", shox_cd), ("help", shox_help), ("exit", shox_exit)];
+static BUILT_INS: [(&'static str, BuiltIn); 4] = [
+    ("cd", shox_cd),
+    ("help", shox_help),
+    ("exit", shox_exit),
+    ("ls", shox_ls),
+];
 
 fn main() -> ExitCode {
     shox_loop()
@@ -156,4 +161,36 @@ fn shox_help(_args: Vec<String>) -> ExitCode {
 /// Exit the program immediately
 fn shox_exit(_args: Vec<String>) -> ExitCode {
     std::process::exit(1)
+}
+
+/// Primitive ls implementation
+fn shox_ls(_args: Vec<String>) -> ExitCode {
+    let mut code: ExitCode = ExitCode::SUCCESS;
+    let cwd: PathBuf;
+    match env::current_dir() {
+        Ok(p) => cwd = p,
+        Err(e) => {
+            eprintln!("{:#?}", e);
+            return ExitCode::FAILURE;
+        }
+    }
+    let entries: ReadDir;
+    match fs::read_dir(cwd) {
+        Ok(x) => entries = x,
+        Err(e) => {
+            eprintln!("{:#?}", e);
+            return ExitCode::FAILURE;
+        }
+    }
+    entries.for_each(|x| match x {
+        Ok(entry) => {
+            eprint!("{:?}   ", entry.file_name()); // Print file names separated by 3 spaces
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            code = ExitCode::FAILURE;
+        }
+    });
+    eprint!("\n");
+    return code;
 }
