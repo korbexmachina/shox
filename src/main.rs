@@ -5,6 +5,7 @@ use std::{
     fmt::Display,
     io::{self, BufRead, Write},
     path::PathBuf,
+    str::Utf8Error,
 };
 
 use crate::ShoxError::{ForkError, IoError};
@@ -13,6 +14,7 @@ use crate::ShoxError::{ForkError, IoError};
 enum ShoxError {
     IoError(io::Error),
     ForkError,
+    ParseError(Utf8Error),
 }
 
 impl Display for ShoxError {
@@ -20,6 +22,7 @@ impl Display for ShoxError {
         match self {
             ShoxError::IoError(io_error) => write!(f, "{}", io_error),
             ShoxError::ForkError => write!(f, "ForkError"),
+            ShoxError::ParseError(utf8_error) => write!(f, "{}", utf8_error),
         }
     }
 }
@@ -27,6 +30,12 @@ impl Display for ShoxError {
 impl From<std::io::Error> for ShoxError {
     fn from(err: std::io::Error) -> Self {
         ShoxError::IoError(err)
+    }
+}
+
+impl From<Utf8Error> for ShoxError {
+    fn from(err: Utf8Error) -> Self {
+        ShoxError::ParseError(err)
     }
 }
 
@@ -104,14 +113,18 @@ fn shox_launch(args: Vec<String>) -> Result<(), ShoxError> {
         pid = fork();
         // Validate pid
         if pid == 0 {
+            // pid == 0 => child
             if libc::execvp(c_args[0].as_ptr(), argv.as_ptr()) == -1 {
-                eprintln!("{}", io::Error::last_os_error()); // Print os error
-                libc::_exit(127)
+                // Command not found
+                eprintln!("SHOx: Command not found: \"{}\"", c_args[0].to_str()?); // Print user facing error message
+                libc::_exit(127); // Command not found
             }
+            libc::_exit(0) // Success
         } else if pid < 0 {
             // fork failure
             return Err(ForkError);
         } else {
+            // Wait on child process to finish
             loop {
                 waitpid(pid, status, options);
                 if WIFEXITED(*status) || WIFSIGNALED(*status) {
